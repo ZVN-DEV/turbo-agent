@@ -1,0 +1,106 @@
+// simple_agent.tb — A real LLM agent using TurboLang v0.9.0
+// Calls the Anthropic API via shell_exec (curl) with tool use.
+// Requires ANTHROPIC_API_KEY environment variable to be set.
+//
+// Usage: turbolang run simple_agent.tb
+
+struct AgentConfig {
+    model: str,
+    system_prompt: str,
+    max_turns: i64,
+    api_key: str,
+}
+
+fn build_initial_request(model: str, system: str, user_msg: str) -> str {
+    "\{\"model\":\"" + model + "\",\"max_tokens\":1024,\"system\":\"" + system + "\",\"messages\":[\{\"role\":\"user\",\"content\":\"" + user_msg + "\"\}],\"tools\":[\{\"name\":\"get_weather\",\"description\":\"Get current weather for a city\",\"input_schema\":\{\"type\":\"object\",\"properties\":\{\"city\":\{\"type\":\"string\",\"description\":\"City name\"\}\},\"required\":[\"city\"]\}\}]\}"
+}
+
+fn build_tool_result_request(model: str, system: str, user_msg: str, tool_use_id: str, tool_result: str) -> str {
+    "\{\"model\":\"" + model + "\",\"max_tokens\":1024,\"system\":\"" + system + "\",\"messages\":[\{\"role\":\"user\",\"content\":\"" + user_msg + "\"\},\{\"role\":\"assistant\",\"content\":[\{\"type\":\"tool_use\",\"id\":\"" + tool_use_id + "\",\"name\":\"get_weather\",\"input\":\{\"city\":\"Seattle\"\}\}]\},\{\"role\":\"user\",\"content\":[\{\"type\":\"tool_result\",\"tool_use_id\":\"" + tool_use_id + "\",\"content\":\"" + tool_result + "\"\}]\}]\}"
+}
+
+fn tool_get_weather(city: str) -> str {
+    // In production, this would call a weather API
+    "Weather in " + city + ": 62F, partly cloudy, humidity 73%"
+}
+
+@unsafe fn call_api(api_key: str, body: str) -> str {
+    let cmd = "curl -sS -X POST https://api.anthropic.com/v1/messages -H 'Content-Type: application/json' -H 'x-api-key: " + api_key + "' -H 'anthropic-version: 2023-06-01' -d '" + body + "'"
+    shell_exec(cmd)
+}
+
+@unsafe fn agent_loop(config: AgentConfig, user_msg: str) {
+    print("User: " + user_msg)
+    print("")
+
+    // Build and send initial request
+    let body = build_initial_request(config.model, config.system_prompt, user_msg)
+    print("Calling Anthropic API...")
+    let response = call_api(config.api_key, body)
+
+    // Parse stop_reason to determine if tool use is needed
+    let stop_reason = json_get(response, "stop_reason")
+    print("Stop reason: " + stop_reason)
+
+    if stop_reason == "tool_use" {
+        // Model wants to call a tool
+        print("Model requested tool call: get_weather")
+
+        // Execute the tool
+        let tool_result = tool_get_weather("Seattle")
+        print("Tool result: " + tool_result)
+
+        // Send tool result back — use a placeholder ID
+        // (In production, parse the actual tool_use_id from response)
+        let followup = build_tool_result_request(config.model, config.system_prompt, user_msg, "toolu_01", tool_result)
+
+        print("")
+        print("Sending tool result back to model...")
+        let final_response = call_api(config.api_key, followup)
+
+        // Extract final text from response
+        let final_stop = json_get(final_response, "stop_reason")
+        print("Final stop reason: " + final_stop)
+
+        // The content field contains the model's final answer
+        if contains(final_response, "\"type\":\"text\"") {
+            print("Assistant: (see raw response below)")
+            print(final_response)
+        } else {
+            print("Assistant response:")
+            print(final_response)
+        }
+    } else if stop_reason == "end_turn" {
+        // Direct text response, no tool needed
+        print("Assistant response:")
+        print(response)
+    } else {
+        print("Unexpected stop reason: " + stop_reason)
+        print(response)
+    }
+}
+
+@unsafe fn main() {
+    let api_key = env_get("ANTHROPIC_API_KEY")
+    if len(api_key) == 0 {
+        print("ERROR: ANTHROPIC_API_KEY environment variable not set")
+        print("Set it with: export ANTHROPIC_API_KEY=your-key-here")
+        return
+    }
+
+    let config = AgentConfig {
+        model: "claude-sonnet-4-20250514",
+        system_prompt: "You are a helpful assistant with a get_weather tool. Use it when asked about weather.",
+        max_turns: 3,
+        api_key: api_key,
+    }
+
+    print("=== TurboLang Agent Demo ===")
+    print("Model: " + config.model)
+    print("")
+
+    agent_loop(config, "What is the weather like in Seattle?")
+
+    print("")
+    print("=== Session complete ===")
+}

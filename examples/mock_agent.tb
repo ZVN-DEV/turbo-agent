@@ -1,0 +1,103 @@
+// mock_agent.tb — Demonstrates the agent pattern using TurboLang v0.9.0
+// No real API key needed; simulates LLM responses with mock data.
+
+struct AgentConfig {
+    model: str,
+    system_prompt: str,
+    max_turns: i64,
+}
+
+fn build_request_body(system: str, user_msg: str) -> str {
+    "\{\"model\":\"mock-model\",\"system\":\"" + system + "\",\"messages\":[\{\"role\":\"user\",\"content\":\"" + user_msg + "\"\}]\}"
+}
+
+fn mock_llm_response(user_msg: str) -> str {
+    if contains(user_msg, "weather") {
+        "\{\"role\":\"assistant\",\"content\":\"tool_call:get_weather\",\"tool_name\":\"get_weather\",\"tool_args_city\":\"Seattle\"\}"
+    } else if contains(user_msg, "calculate") {
+        "\{\"role\":\"assistant\",\"content\":\"tool_call:calculator\",\"tool_name\":\"calculator\",\"tool_args_expr\":\"2+2\"\}"
+    } else {
+        "\{\"role\":\"assistant\",\"content\":\"I can help with weather lookups and calculations.\"\}"
+    }
+}
+
+fn tool_get_weather(city: str) -> str {
+    "\{\"temperature\":\"72F\",\"condition\":\"sunny\",\"city\":\"" + city + "\"\}"
+}
+
+fn tool_calculator(expr: str) -> str {
+    "4"
+}
+
+fn extract_tool_name(response: str) -> str {
+    if contains(response, "tool_call:get_weather") {
+        "get_weather"
+    } else if contains(response, "tool_call:calculator") {
+        "calculator"
+    } else {
+        "none"
+    }
+}
+
+fn dispatch_tool(tool_name: str, response: str) -> str {
+    if tool_name == "get_weather" {
+        let city = json_get(response, "tool_args_city")
+        tool_get_weather(city)
+    } else if tool_name == "calculator" {
+        let expr = json_get(response, "tool_args_expr")
+        tool_calculator(expr)
+    } else {
+        ""
+    }
+}
+
+fn agent_turn(config: AgentConfig, user_msg: str, turn: i64) -> str {
+    print("--- Turn " + to_str(turn) + " ---")
+    print("User: " + user_msg)
+
+    let request = build_request_body(config.system_prompt, user_msg)
+    print("Request built: " + to_str(len(request)) + " bytes")
+
+    let response = mock_llm_response(user_msg)
+    let content = json_get(response, "content")
+    print("Assistant: " + content)
+
+    let tool_name = extract_tool_name(response)
+    if tool_name != "none" {
+        print("  -> Calling tool: " + tool_name)
+        let tool_result = dispatch_tool(tool_name, response)
+        print("  -> Tool result: " + tool_result)
+        print("  -> Final answer: Based on the tool result, the answer is: " + tool_result)
+        tool_result
+    } else {
+        content
+    }
+}
+
+fn run_agent(config: AgentConfig, messages: [str]) {
+    print("=== Agent: " + config.model + " ===")
+    print("System: " + config.system_prompt)
+    print("")
+
+    let mut turn = 1
+    for msg in messages {
+        let _result = agent_turn(config, msg, turn)
+        print("")
+        turn += 1
+        if turn > config.max_turns {
+            print("Max turns reached, stopping.")
+        }
+    }
+    print("=== Agent session complete ===")
+}
+
+fn main() {
+    let config = AgentConfig {
+        model: "claude-sonnet-4-20250514",
+        system_prompt: "You are a helpful assistant with weather and calculator tools.",
+        max_turns: 5,
+    }
+
+    let messages = ["What is the weather in Seattle?", "Can you calculate 2+2?", "Hello, what can you do?"]
+    run_agent(config, messages)
+}
